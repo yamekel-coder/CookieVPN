@@ -1,6 +1,6 @@
 """
 Клиент для работы с 3x-ui панелью через REST API.
-Правильные пути: /login и /panel/api/inbounds/...
+Куки сохраняются через aiohttp.CookieJar между запросами.
 """
 import uuid
 import json
@@ -12,14 +12,17 @@ from config import XUI_HOST, XUI_USERNAME, XUI_PASSWORD, XUI_INBOUND_ID, VPN_DOM
 class XUIClient:
     def __init__(self) -> None:
         self.base_url = XUI_HOST
-        self.session: Optional[aiohttp.ClientSession] = None
+        self._session: Optional[aiohttp.ClientSession] = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
-        if self.session is None or self.session.closed:
-            self.session = aiohttp.ClientSession(
-                connector=aiohttp.TCPConnector(ssl=False)
+        """Возвращает сессию с общим CookieJar (куки сохраняются между запросами)."""
+        if self._session is None or self._session.closed:
+            jar = aiohttp.CookieJar(unsafe=True)  # unsafe=True для IP-адресов
+            self._session = aiohttp.ClientSession(
+                cookie_jar=jar,
+                connector=aiohttp.TCPConnector(ssl=False),
             )
-        return self.session
+        return self._session
 
     async def login(self) -> bool:
         session = await self._get_session()
@@ -30,7 +33,7 @@ class XUIClient:
             )
             text = await resp.text()
             if not text.strip():
-                print("[XUI] Login error: пустой ответ")
+                print("[XUI] Login: пустой ответ")
                 return False
             data = json.loads(text)
             success = data.get("success", False)
@@ -65,6 +68,8 @@ class XUIClient:
         plan_key: str,
         expire_days: int,
     ) -> dict:
+        # Каждый раз логинимся заново чтобы куки были свежими
+        await self._reset_session()
         logged = await self.login()
         if not logged:
             raise RuntimeError("Не удалось авторизоваться в x-ui панели")
@@ -116,6 +121,12 @@ class XUIClient:
             "protocol": protocol,
             "link": link,
         }
+
+    async def _reset_session(self) -> None:
+        """Закрывает старую сессию чтобы куки обновились."""
+        if self._session and not self._session.closed:
+            await self._session.close()
+        self._session = None
 
     async def _build_link(
         self,
@@ -182,6 +193,7 @@ class XUIClient:
         return link
 
     async def delete_client(self, client_uuid: str) -> bool:
+        await self._reset_session()
         logged = await self.login()
         if not logged:
             return False
@@ -198,6 +210,7 @@ class XUIClient:
             return False
 
     async def get_client_traffic(self, email: str) -> Optional[dict]:
+        await self._reset_session()
         logged = await self.login()
         if not logged:
             return None
@@ -215,8 +228,8 @@ class XUIClient:
         return None
 
     async def close(self) -> None:
-        if self.session and not self.session.closed:
-            await self.session.close()
+        if self._session and not self._session.closed:
+            await self._session.close()
 
 
 # Singleton
