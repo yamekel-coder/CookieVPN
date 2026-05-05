@@ -15,6 +15,7 @@ from handlers.subscription import router as sub_router
 from handlers.payment import router as payment_router
 from handlers.config_cmd import router as config_router
 from handlers.admin import router as admin_router
+from handlers.profile import router as profile_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -36,14 +37,13 @@ async def main() -> None:
     )
     dp = Dispatcher(storage=MemoryStorage())
 
-    # Регистрируем роутеры
     dp.include_router(start_router)
+    dp.include_router(profile_router)
     dp.include_router(sub_router)
     dp.include_router(payment_router)
     dp.include_router(config_router)
     dp.include_router(admin_router)
 
-    # Запускаем планировщик в фоне
     asyncio.create_task(run_scheduler(bot))
 
     logger.info("🍪 CookieVPN бот запущен!")
