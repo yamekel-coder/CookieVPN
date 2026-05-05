@@ -47,6 +47,28 @@ async def init_db() -> None:
             )
         """)
         await db.execute("""
+            CREATE TABLE IF NOT EXISTS promocodes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                code            TEXT UNIQUE NOT NULL,
+                type            TEXT NOT NULL,
+                value           INTEGER NOT NULL,
+                max_uses        INTEGER NOT NULL DEFAULT 1,
+                used_count      INTEGER NOT NULL DEFAULT 0,
+                expires_at      TEXT,
+                active          INTEGER NOT NULL DEFAULT 1,
+                created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS promocode_uses (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                code            TEXT NOT NULL,
+                tg_id           INTEGER NOT NULL,
+                used_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(code, tg_id)
+            )
+        """)
+        await db.execute("""
             CREATE TABLE IF NOT EXISTS referrals (
                 id              INTEGER PRIMARY KEY AUTOINCREMENT,
                 inviter_id      INTEGER NOT NULL,
@@ -266,3 +288,113 @@ async def get_stats() -> dict:
         "total_refs": total_refs,
         "new_today": new_today,
     }
+
+
+# ─── Промокоды ────────────────────────────────────────────────────────────────
+
+async def create_promocode(
+    code: str,
+    type_: str,       # "discount" | "days" | "plan"
+    value: int,       # % скидки | кол-во дней | 0 (для plan)
+    max_uses: int = 1,
+    expires_at: Optional[str] = None,
+    plan_key: Optional[str] = None,
+) -> bool:
+    """Создаёт промокод. Возвращает False если код уже существует."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            await db.execute("""
+                INSERT INTO promocodes (code, type, value, max_uses, expires_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (code.upper(), type_, value, max_uses, expires_at))
+            await db.commit()
+            return True
+        except Exception:
+            return False
+
+
+async def get_promocode(code: str) -> Optional[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM promocodes WHERE code=? AND active=1", (code.upper(),)
+        ) as c:
+            row = await c.fetchone()
+            return dict(row) if row else None
+
+
+async def use_promocode(code: str, tg_id: int) -> tuple[bool, str]:
+    """
+    Применяет промокод для пользователя.
+    Возвращает (успех, сообщение об ошибке или тип промокода).
+    """
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM promocodes WHERE code=? AND active=1", (code.upper(),)
+        ) as c:
+            promo = await c.fetchone()
+
+        if not promo:
+            return False, "Промокод не найден или неактивен."
+
+        promo = dict(promo)
+
+        # Проверяем срок действия
+        if promo["expires_at"]:
+            if datetime.utcnow().isoformat() > promo["expires_at"]:
+                return False, "Промокод истёк."
+
+        # Проверяем лимит использований
+        if promo["used_count"] >= promo["max_uses"]:
+            return False, "Промокод уже использован максимальное количество раз."
+
+        # Проверяем не использовал ли этот юзер
+        async with db.execute(
+            "SELECT 1 FROM promocode_uses WHERE code=? AND tg_id=?", (code.upper(), tg_id)
+        ) as c:
+            already = await c.fetchone()
+        if already:
+            return False, "Ты уже использовал этот промокод."
+
+        # Применяем
+        await db.execute(
+            "INSERT INTO promocode_uses (code, tg_id) VALUES (?, ?)", (code.upper(), tg_id)
+        )
+        await db.execute(
+            "UPDATE promocodes SET used_count = used_count + 1 WHERE code=?", (code.upper(),)
+        )
+        await db.commit()
+        return True, promo["type"]
+
+
+async def get_all_promocodes() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM promocodes ORDER BY created_at DESC"
+        ) as c:
+            return [dict(r) for r in await c.fetchall()]
+
+
+async def deactivate_promocode(code: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE promocodes SET active=0 WHERE code=?", (code.upper(),)
+        )
+        await db.commit()
+        return True
+
+
+async def give_plan_to_user(tg_id: int, plan_key: str, days: int) -> dict:
+    """Выдаёт тариф пользователю напрямую (без оплаты)."""
+    from xui_client import xui
+    client = await xui.add_client(tg_id=tg_id, plan_key=plan_key, expire_days=days)
+    sub = await create_subscription(
+        tg_id=tg_id,
+        xui_uuid=client["uuid"],
+        xui_email=client["email"],
+        plan_key=plan_key,
+        days=days,
+    )
+    return {**sub, "link": client["link"]}

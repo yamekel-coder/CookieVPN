@@ -1,5 +1,5 @@
 """
-Оплата: Telegram Stars, ЮKassa, пробный период, реферальные бонусы.
+Оплата: Telegram Stars, ЮKassa, пробный период, реферальные бонусы, промокоды.
 """
 import logging
 from aiogram import Router, F, Bot
@@ -7,18 +7,25 @@ from aiogram.types import (
     CallbackQuery, Message, LabeledPrice,
     PreCheckoutQuery, SuccessfulPayment,
 )
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from config import PLANS, PAYMENT_METHOD, YOOKASSA_SHOP_ID, YOOKASSA_SECRET_KEY, REFERRAL_DAYS
 from database import (
     get_active_subscription, create_subscription, create_payment,
     update_payment_status, is_trial_used, mark_trial_used,
     credit_referral_bonus, extend_subscription, get_user,
+    use_promocode, get_promocode,
 )
 from keyboards import plans_keyboard, payment_method_keyboard, back_main_keyboard, main_menu
 from xui_client import xui
 
 logger = logging.getLogger(__name__)
 router = Router()
+
+
+class PromoState(StatesGroup):
+    waiting_code = State()
 
 
 # ─── Показать магазин ─────────────────────────────────────────────────────────
@@ -39,6 +46,104 @@ async def show_plans(callback: CallbackQuery) -> None:
         parse_mode="HTML",
     )
     await callback.answer()
+
+
+@router.callback_query(F.data == "enter_promo")
+async def enter_promo(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(PromoState.waiting_code)
+    await callback.message.edit_text(
+        "🎟 <b>Введи промокод:</b>\n\n/cancel — отмена.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(PromoState.waiting_code)
+async def apply_promo(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        trial_used = await is_trial_used(message.from_user.id)
+        method = "stars" if PAYMENT_METHOD != "yookassa" else "rub"
+        await message.answer(
+            "🛒 <b>Выбери тариф CookieVPN</b>",
+            reply_markup=plans_keyboard(method, show_trial=not trial_used),
+            parse_mode="HTML",
+        )
+        return
+
+    code = message.text.strip().upper()
+    tg_id = message.from_user.id
+
+    promo = await get_promocode(code)
+    if not promo:
+        await message.answer("❌ Промокод не найден или неактивен.")
+        return
+
+    success, result = await use_promocode(code, tg_id)
+    if not success:
+        await message.answer(f"❌ {result}")
+        return
+
+    await state.clear()
+
+    if promo["type"] == "days":
+        # Бонусные дни — продлеваем подписку или сохраняем
+        days = promo["value"]
+        new_expires = await extend_subscription(tg_id, days)
+        if new_expires:
+            await message.answer(
+                f"✅ Промокод активирован!\n🎁 +<b>{days} дней</b> к подписке.\nДо: <b>{new_expires[:10]}</b>",
+                reply_markup=main_menu(), parse_mode="HTML",
+            )
+        else:
+            await message.answer(
+                f"✅ Промокод принят! +<b>{days} дней</b> будут добавлены при следующей покупке.",
+                reply_markup=main_menu(), parse_mode="HTML",
+            )
+
+    elif promo["type"] == "discount":
+        # Скидка — показываем тарифы со скидкой
+        discount = promo["value"]
+        method = "stars" if PAYMENT_METHOD != "yookassa" else "rub"
+        await message.answer(
+            f"✅ Промокод активирован! Скидка <b>{discount}%</b> применена.\n\nВыбери тариф:",
+            reply_markup=_plans_with_discount(method, discount),
+            parse_mode="HTML",
+        )
+
+    elif promo["type"] == "plan":
+        # Бесплатный тариф — нужно знать какой план
+        # Для простоты выдаём 1 месяц бесплатно
+        processing = await message.answer("⏳ Активирую VPN...")
+        try:
+            from database import give_plan_to_user
+            result = await give_plan_to_user(tg_id, "1month", PLANS["1month"]["days"])
+            await processing.edit_text(
+                f"🎉 <b>Промокод активирован!</b>\n\n"
+                f"Тариф: 🍪 1 месяц\n\n"
+                f"🔗 Ссылка:\n<code>{result['link']}</code>",
+                reply_markup=main_menu(), parse_mode="HTML",
+            )
+        except Exception as e:
+            await processing.edit_text(f"❌ Ошибка: {e}")
+
+
+def _plans_with_discount(payment: str, discount: int) -> None:
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+    from aiogram.types import InlineKeyboardButton
+    builder = InlineKeyboardBuilder()
+    for key, plan in PLANS.items():
+        if key == "trial":
+            continue
+        price = plan["stars"] if payment == "stars" else plan["rub"]
+        discounted = int(price * (1 - discount / 100))
+        currency_label = "⭐" if payment == "stars" else "₽"
+        builder.row(InlineKeyboardButton(
+            text=f"{plan['emoji']} {plan['label']} — {discounted} {currency_label} (-{discount}%)",
+            callback_data=f"plan:{key}:{payment}",
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+    return builder.as_markup()
 
 
 @router.callback_query(F.data == "trial")

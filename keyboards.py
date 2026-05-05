@@ -41,6 +41,7 @@ def plans_keyboard(payment: str = "stars", show_trial: bool = False) -> InlineKe
                 callback_data=f"plan:{key}:{payment}",
             )
         )
+    builder.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="enter_promo"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
     return builder.as_markup()
 
@@ -114,6 +115,44 @@ def admin_keyboard() -> InlineKeyboardMarkup:
     builder.row(InlineKeyboardButton(text="📊 Статистика", callback_data="admin:stats"))
     builder.row(InlineKeyboardButton(text="👥 Пользователи", callback_data="admin:users"))
     builder.row(InlineKeyboardButton(text="📢 Рассылка", callback_data="admin:broadcast"))
-    builder.row(InlineKeyboardButton(text="➕ Выдать дни", callback_data="admin:give_days"))
+    builder.row(
+        InlineKeyboardButton(text="➕ Выдать дни", callback_data="admin:give_days"),
+        InlineKeyboardButton(text="🎁 Выдать тариф", callback_data="admin:give_plan"),
+    )
+    builder.row(
+        InlineKeyboardButton(text="🎟 Промокоды", callback_data="admin:promocodes"),
+    )
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+    return builder.as_markup()
+
+
+def promocodes_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="➕ Создать промокод", callback_data="admin:promo_create"))
+    builder.row(InlineKeyboardButton(text="📋 Список промокодов", callback_data="admin:promo_list"))
+    builder.row(InlineKeyboardButton(text="❌ Удалить промокод", callback_data="admin:promo_delete"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back"))
+    return builder.as_markup()
+
+
+def promo_type_keyboard() -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(text="💰 Скидка %", callback_data="promo_type:discount"))
+    builder.row(InlineKeyboardButton(text="📅 Бонусные дни", callback_data="promo_type:days"))
+    builder.row(InlineKeyboardButton(text="🎁 Бесплатный тариф", callback_data="promo_type:plan"))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:promocodes"))
+    return builder.as_markup()
+
+
+def give_plan_keyboard() -> InlineKeyboardMarkup:
+    from config import PLANS
+    builder = InlineKeyboardBuilder()
+    for key, plan in PLANS.items():
+        if key == "trial":
+            continue
+        builder.row(InlineKeyboardButton(
+            text=f"{plan['emoji']} {plan['label']}",
+            callback_data=f"admin:give_plan_select:{key}",
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back"))
     return builder.as_markup()

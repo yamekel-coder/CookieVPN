@@ -5,9 +5,16 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from config import ADMIN_IDS
-from database import get_stats, get_all_users, extend_subscription, get_active_subscription
-from keyboards import admin_keyboard, back_main_keyboard
+from config import ADMIN_IDS, PLANS
+from database import (
+    get_stats, get_all_users, extend_subscription,
+    create_promocode, get_all_promocodes, deactivate_promocode,
+    give_plan_to_user,
+)
+from keyboards import (
+    admin_keyboard, back_main_keyboard, promocodes_keyboard,
+    promo_type_keyboard, give_plan_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -16,20 +23,49 @@ router = Router()
 class BroadcastState(StatesGroup):
     waiting_message = State()
 
-
 class GiveDaysState(StatesGroup):
     waiting_user_id = State()
     waiting_days = State()
+
+class GivePlanState(StatesGroup):
+    waiting_user_id = State()
+    plan_key = State()
+
+class PromoCreateState(StatesGroup):
+    waiting_type = State()
+    waiting_code = State()
+    waiting_value = State()
+    waiting_uses = State()
+    waiting_plan = State()
+
+class PromoDeleteState(StatesGroup):
+    waiting_code = State()
 
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+# ─── Назад в админку ──────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:back")
+async def admin_back(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🔧 <b>Панель администратора CookieVPN</b>",
+        reply_markup=admin_keyboard(), parse_mode="HTML"
+    )
+    await callback.answer()
+
+
+# ─── Статистика ───────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "admin:stats")
 async def admin_stats(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа.", show_alert=True)
+        await callback.answer("⛔", show_alert=True)
         return
     stats = await get_stats()
     text = (
@@ -44,10 +80,12 @@ async def admin_stats(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+# ─── Пользователи ─────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "admin:users")
 async def admin_users(callback: CallbackQuery) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа.", show_alert=True)
+        await callback.answer("⛔", show_alert=True)
         return
     users = await get_all_users()
     if not users:
@@ -66,92 +104,25 @@ async def admin_users(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+# ─── Рассылка ─────────────────────────────────────────────────────────────────
+
 @router.callback_query(F.data == "admin:broadcast")
 async def admin_broadcast_start(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа.", show_alert=True)
+        await callback.answer("⛔", show_alert=True)
         return
     await state.set_state(BroadcastState.waiting_message)
     await callback.message.edit_text(
-        "📢 <b>Рассылка</b>\n\nОтправь сообщение для рассылки.\n/cancel — отмена.",
+        "📢 <b>Рассылка</b>\n\nОтправь сообщение.\n/cancel — отмена.",
         parse_mode="HTML",
     )
     await callback.answer()
-
-
-@router.callback_query(F.data == "admin:give_days")
-async def admin_give_days_start(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔ Нет доступа.", show_alert=True)
-        return
-    await state.set_state(GiveDaysState.waiting_user_id)
-    await callback.message.edit_text(
-        "➕ <b>Выдать дни пользователю</b>\n\nВведи Telegram ID пользователя:\n/cancel — отмена.",
-        parse_mode="HTML",
-    )
-    await callback.answer()
-
-
-@router.message(GiveDaysState.waiting_user_id)
-async def give_days_get_user(message: Message, state: FSMContext) -> None:
-    if message.text == "/cancel":
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=admin_keyboard())
-        return
-    try:
-        user_id = int(message.text.strip())
-    except ValueError:
-        await message.answer("Введи числовой ID.")
-        return
-    await state.update_data(user_id=user_id)
-    await state.set_state(GiveDaysState.waiting_days)
-    await message.answer(f"Пользователь: <code>{user_id}</code>\nСколько дней добавить?", parse_mode="HTML")
-
-
-@router.message(GiveDaysState.waiting_days)
-async def give_days_apply(message: Message, state: FSMContext) -> None:
-    if message.text == "/cancel":
-        await state.clear()
-        await message.answer("Отменено.", reply_markup=admin_keyboard())
-        return
-    try:
-        days = int(message.text.strip())
-    except ValueError:
-        await message.answer("Введи число дней.")
-        return
-    data = await state.get_data()
-    user_id = data["user_id"]
-    await state.clear()
-
-    new_expires = await extend_subscription(user_id, days)
-    if new_expires:
-        await message.answer(
-            f"✅ Пользователю <code>{user_id}</code> добавлено <b>{days} дней</b>.\n"
-            f"Подписка до: <b>{new_expires[:10]}</b>",
-            reply_markup=admin_keyboard(),
-            parse_mode="HTML",
-        )
-        try:
-            await message.bot.send_message(
-                user_id,
-                f"🎁 Администратор добавил тебе <b>{days} дней</b> к подписке!\n"
-                f"Подписка продлена до: <b>{new_expires[:10]}</b>",
-                parse_mode="HTML",
-            )
-        except Exception:
-            pass
-    else:
-        await message.answer(
-            f"❌ У пользователя <code>{user_id}</code> нет активной подписки.",
-            reply_markup=admin_keyboard(),
-            parse_mode="HTML",
-        )
 
 
 @router.message(BroadcastState.waiting_message, F.text == "/cancel")
 async def broadcast_cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer("Рассылка отменена.", reply_markup=admin_keyboard())
+    await message.answer("Отменено.", reply_markup=admin_keyboard())
 
 
 @router.message(BroadcastState.waiting_message)
@@ -174,4 +145,344 @@ async def broadcast_send(message: Message, state: FSMContext) -> None:
     await status_msg.edit_text(
         f"✅ Готово! Отправлено: {sent}, ошибок: {failed}",
         reply_markup=admin_keyboard(),
+    )
+
+
+# ─── Выдать дни ───────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:give_days")
+async def admin_give_days_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await state.set_state(GiveDaysState.waiting_user_id)
+    await callback.message.edit_text(
+        "➕ <b>Выдать дни</b>\n\nВведи Telegram ID:\n/cancel — отмена.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(GiveDaysState.waiting_user_id)
+async def give_days_get_user(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введи числовой ID.")
+        return
+    await state.update_data(user_id=user_id)
+    await state.set_state(GiveDaysState.waiting_days)
+    await message.answer(f"ID: <code>{user_id}</code>\nСколько дней?", parse_mode="HTML")
+
+
+@router.message(GiveDaysState.waiting_days)
+async def give_days_apply(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    try:
+        days = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введи число.")
+        return
+    data = await state.get_data()
+    user_id = data["user_id"]
+    await state.clear()
+
+    new_expires = await extend_subscription(user_id, days)
+    if new_expires:
+        await message.answer(
+            f"✅ <code>{user_id}</code> +<b>{days} дней</b>. До: <b>{new_expires[:10]}</b>",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+        try:
+            await message.bot.send_message(
+                user_id,
+                f"🎁 Тебе добавили <b>{days} дней</b>!\nПодписка до: <b>{new_expires[:10]}</b>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    else:
+        await message.answer(
+            f"❌ У <code>{user_id}</code> нет активной подписки.",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+
+
+# ─── Выдать тариф ─────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:give_plan")
+async def admin_give_plan(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🎁 <b>Выдать тариф</b>\n\nВыбери тариф:",
+        reply_markup=give_plan_keyboard(), parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:give_plan_select:"))
+async def admin_give_plan_select(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    plan_key = callback.data.split(":")[2]
+    await state.set_state(GivePlanState.waiting_user_id)
+    await state.update_data(plan_key=plan_key)
+    plan = PLANS[plan_key]
+    await callback.message.edit_text(
+        f"🎁 Тариф: <b>{plan['emoji']} {plan['label']}</b>\n\nВведи Telegram ID пользователя:\n/cancel — отмена.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(GivePlanState.waiting_user_id)
+async def give_plan_apply(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    try:
+        user_id = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введи числовой ID.")
+        return
+
+    data = await state.get_data()
+    plan_key = data["plan_key"]
+    plan = PLANS[plan_key]
+    await state.clear()
+
+    processing = await message.answer(f"⏳ Создаю VPN для <code>{user_id}</code>...", parse_mode="HTML")
+    try:
+        result = await give_plan_to_user(user_id, plan_key, plan["days"])
+        await processing.edit_text(
+            f"✅ Тариф <b>{plan['emoji']} {plan['label']}</b> выдан пользователю <code>{user_id}</code>!",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+        try:
+            await message.bot.send_message(
+                user_id,
+                f"🎉 <b>Тебе выдан тариф {plan['emoji']} {plan['label']}!</b>\n\n"
+                f"🔗 Ссылка для подключения:\n<code>{result['link']}</code>\n\n"
+                f"📅 Действует {plan['days']} дней.",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+    except Exception as e:
+        await processing.edit_text(
+            f"❌ Ошибка: {e}", reply_markup=admin_keyboard(),
+        )
+
+
+# ─── Промокоды ────────────────────────────────────────────────────────────────
+
+@router.callback_query(F.data == "admin:promocodes")
+async def admin_promocodes(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await callback.message.edit_text(
+        "🎟 <b>Управление промокодами</b>",
+        reply_markup=promocodes_keyboard(), parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:promo_list")
+async def admin_promo_list(callback: CallbackQuery) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    promos = await get_all_promocodes()
+    if not promos:
+        await callback.answer("Промокодов нет.", show_alert=True)
+        return
+
+    lines = ["🎟 <b>Промокоды</b>\n"]
+    for p in promos:
+        status = "✅" if p["active"] else "❌"
+        type_label = {"discount": f"скидка {p['value']}%", "days": f"+{p['value']} дней", "plan": f"тариф"}.get(p["type"], p["type"])
+        expires = p["expires_at"][:10] if p["expires_at"] else "∞"
+        lines.append(
+            f"{status} <code>{p['code']}</code> — {type_label} | "
+            f"{p['used_count']}/{p['max_uses']} | до {expires}"
+        )
+
+    await callback.message.edit_text(
+        "\n".join(lines), reply_markup=promocodes_keyboard(), parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data == "admin:promo_create")
+async def admin_promo_create_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await state.set_state(PromoCreateState.waiting_type)
+    await callback.message.edit_text(
+        "🎟 <b>Создать промокод</b>\n\nВыбери тип:",
+        reply_markup=promo_type_keyboard(), parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("promo_type:"))
+async def promo_type_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    promo_type = callback.data.split(":")[1]
+    await state.update_data(promo_type=promo_type)
+
+    if promo_type == "plan":
+        await state.set_state(PromoCreateState.waiting_plan)
+        from keyboards import give_plan_keyboard
+        await callback.message.edit_text(
+            "🎁 Выбери тариф для промокода:",
+            reply_markup=give_plan_keyboard(),
+        )
+    else:
+        await state.set_state(PromoCreateState.waiting_code)
+        type_hint = "процент скидки (например 20)" if promo_type == "discount" else "количество дней (например 7)"
+        await callback.message.edit_text(
+            f"Введи <b>код промокода</b> (латиница, например COOKIE20):\n/cancel — отмена.",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:give_plan_select:"), PromoCreateState.waiting_plan)
+async def promo_plan_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    plan_key = callback.data.split(":")[2]
+    await state.update_data(plan_key=plan_key)
+    await state.set_state(PromoCreateState.waiting_code)
+    await callback.message.edit_text(
+        "Введи <b>код промокода</b> (латиница, например FREEVPN):\n/cancel — отмена.",
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.message(PromoCreateState.waiting_code)
+async def promo_code_entered(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    code = message.text.strip().upper()
+    if not code.isalnum():
+        await message.answer("Код должен содержать только буквы и цифры.")
+        return
+    await state.update_data(code=code)
+    data = await state.get_data()
+
+    if data["promo_type"] == "plan":
+        await state.set_state(PromoCreateState.waiting_uses)
+        await message.answer(f"Код: <b>{code}</b>\nСколько раз можно использовать? (например 1 или 100):", parse_mode="HTML")
+    else:
+        await state.set_state(PromoCreateState.waiting_value)
+        hint = "процент скидки (1-99)" if data["promo_type"] == "discount" else "количество дней"
+        await message.answer(f"Код: <b>{code}</b>\nВведи {hint}:", parse_mode="HTML")
+
+
+@router.message(PromoCreateState.waiting_value)
+async def promo_value_entered(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    try:
+        value = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введи число.")
+        return
+    await state.update_data(value=value)
+    await state.set_state(PromoCreateState.waiting_uses)
+    await message.answer("Сколько раз можно использовать? (например 1 или 100):")
+
+
+@router.message(PromoCreateState.waiting_uses)
+async def promo_uses_entered(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    try:
+        max_uses = int(message.text.strip())
+    except ValueError:
+        await message.answer("Введи число.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+
+    promo_type = data["promo_type"]
+    code = data["code"]
+    value = data.get("value", 0)
+    plan_key = data.get("plan_key", "")
+
+    # Для plan сохраняем plan_key в value как строку через отдельное поле
+    # Используем value=0 для plan, plan_key в expires_at временно не используем
+    success = await create_promocode(
+        code=code,
+        type_=promo_type,
+        value=value if promo_type != "plan" else 0,
+        max_uses=max_uses,
+        plan_key=plan_key if promo_type == "plan" else None,
+    )
+
+    if success:
+        type_label = {
+            "discount": f"скидка {value}%",
+            "days": f"+{value} дней",
+            "plan": f"тариф {PLANS.get(plan_key, {}).get('label', plan_key)}",
+        }.get(promo_type, promo_type)
+
+        await message.answer(
+            f"✅ <b>Промокод создан!</b>\n\n"
+            f"🎟 Код: <code>{code}</code>\n"
+            f"📦 Тип: {type_label}\n"
+            f"🔢 Использований: {max_uses}",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+    else:
+        await message.answer(
+            f"❌ Промокод <code>{code}</code> уже существует.",
+            reply_markup=admin_keyboard(), parse_mode="HTML",
+        )
+
+
+@router.callback_query(F.data == "admin:promo_delete")
+async def admin_promo_delete_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("⛔", show_alert=True)
+        return
+    await state.set_state(PromoDeleteState.waiting_code)
+    await callback.message.edit_text(
+        "❌ Введи код промокода для удаления:\n/cancel — отмена.",
+    )
+    await callback.answer()
+
+
+@router.message(PromoDeleteState.waiting_code)
+async def promo_delete_apply(message: Message, state: FSMContext) -> None:
+    if message.text == "/cancel":
+        await state.clear()
+        await message.answer("Отменено.", reply_markup=admin_keyboard())
+        return
+    code = message.text.strip().upper()
+    await state.clear()
+    await deactivate_promocode(code)
+    await message.answer(
+        f"✅ Промокод <code>{code}</code> деактивирован.",
+        reply_markup=admin_keyboard(), parse_mode="HTML",
     )

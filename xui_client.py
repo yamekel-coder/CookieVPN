@@ -80,6 +80,16 @@ class XUIClient:
         import time
         expire_ms = int((time.time() + expire_days * 24 * 60 * 60) * 1000)
 
+        # Красивое имя конфига в приложении
+        plan_labels = {
+            "trial": "Trial 🆓",
+            "1month": "1 Month",
+            "3months": "3 Months",
+            "6months": "6 Months",
+            "1year": "1 Year 👑",
+        }
+        remark = f"🇩🇪 CookieVPN {plan_labels.get(plan_key, plan_key)}"
+
         inbound = await self.get_inbound()
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
 
@@ -116,7 +126,7 @@ class XUIClient:
             print(f"[XUI] Add client error: {e}")
             raise
 
-        link = await self._build_link(protocol, client_uuid, email, inbound)
+        link = await self._build_link(protocol, client_uuid, email, inbound, remark)
         return {
             "uuid": client_uuid,
             "email": email,
@@ -136,6 +146,7 @@ class XUIClient:
         client_uuid: str,
         email: str,
         inbound: Optional[dict],
+        remark: str = "",
     ) -> str:
         import base64
 
@@ -173,11 +184,14 @@ class XUIClient:
                 service = grpc.get("serviceName", "")
                 params += f"&serviceName={service}&mode=gun"
 
-            link = f"vless://{client_uuid}@{VPN_DOMAIN}:{port}?{params}#{email}"
+            # remark в конце ссылки — это имя которое показывается в приложении
+            display_name = remark if remark else email
+            import urllib.parse
+            link = f"vless://{client_uuid}@{VPN_DOMAIN}:{port}?{params}#{urllib.parse.quote(display_name)}"
 
         elif protocol == "vmess":
             vmess_config = {
-                "v": "2", "ps": email, "add": VPN_DOMAIN,
+                "v": "2", "ps": remark if remark else email, "add": VPN_DOMAIN,
                 "port": str(port), "id": client_uuid, "aid": "0",
                 "scy": "auto", "net": network, "type": "none",
                 "host": "", "path": "",
