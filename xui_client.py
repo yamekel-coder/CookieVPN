@@ -24,16 +24,21 @@ class XUIClient:
 
     async def login(self) -> bool:
         """
-        3x-ui принимает логин как JSON (не form-data).
+        3x-ui принимает логин как form-data на /login.
         content_type=None нужен чтобы aiohttp не падал на нестандартный mimetype.
         """
         session = await self._get_session()
+        # Пробуем form-data (стандарт для 3x-ui)
         try:
             resp = await session.post(
                 f"{self.base_url}/login",
-                json={"username": XUI_USERNAME, "password": XUI_PASSWORD},
+                data={"username": XUI_USERNAME, "password": XUI_PASSWORD},
             )
-            data = await resp.json(content_type=None)
+            text = await resp.text()
+            if not text.strip():
+                raise ValueError("Пустой ответ от x-ui")
+            import json as _json
+            data = _json.loads(text)
             success = data.get("success", False)
             if not success:
                 print(f"[XUI] Login failed: {data.get('msg', 'unknown')}")
