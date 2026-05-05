@@ -23,14 +23,21 @@ class XUIClient:
         return self.session
 
     async def login(self) -> bool:
+        """
+        3x-ui принимает логин как JSON (не form-data).
+        content_type=None нужен чтобы aiohttp не падал на нестандартный mimetype.
+        """
         session = await self._get_session()
         try:
             resp = await session.post(
                 f"{self.base_url}/login",
-                data={"username": XUI_USERNAME, "password": XUI_PASSWORD},
+                json={"username": XUI_USERNAME, "password": XUI_PASSWORD},
             )
-            data = await resp.json()
-            return data.get("success", False)
+            data = await resp.json(content_type=None)
+            success = data.get("success", False)
+            if not success:
+                print(f"[XUI] Login failed: {data.get('msg', 'unknown')}")
+            return success
         except Exception as e:
             print(f"[XUI] Login error: {e}")
             return False
@@ -39,7 +46,7 @@ class XUIClient:
         session = await self._get_session()
         try:
             resp = await session.get(f"{self.base_url}/xui/API/inbounds/get/{XUI_INBOUND_ID}")
-            data = await resp.json()
+            data = await resp.json(content_type=None)
             if data.get("success"):
                 return data["obj"]
         except Exception as e:
@@ -91,7 +98,7 @@ class XUIClient:
                     "settings": json.dumps(client_settings),
                 },
             )
-            data = await resp.json()
+            data = await resp.json(content_type=None)
             if not data.get("success"):
                 raise RuntimeError(f"x-ui ответил ошибкой: {data.get('msg')}")
         except Exception as e:
@@ -191,7 +198,7 @@ class XUIClient:
             resp = await session.post(
                 f"{self.base_url}/xui/API/inbounds/{XUI_INBOUND_ID}/delClient/{client_uuid}"
             )
-            data = await resp.json()
+            data = await resp.json(content_type=None)
             return data.get("success", False)
         except Exception as e:
             print(f"[XUI] Delete client error: {e}")
@@ -207,7 +214,7 @@ class XUIClient:
             resp = await session.get(
                 f"{self.base_url}/xui/API/inbounds/getClientTraffics/{email}"
             )
-            data = await resp.json()
+            data = await resp.json(content_type=None)
             if data.get("success"):
                 return data.get("obj")
         except Exception as e:
