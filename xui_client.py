@@ -76,7 +76,9 @@ class XUIClient:
 
         client_uuid = str(uuid.uuid4())
         email = f"tg_{tg_id}_{plan_key}"
-        expire_ms = expire_days * 24 * 60 * 60 * 1000
+        # expiryTime — абсолютный Unix timestamp в миллисекундах
+        import time
+        expire_ms = int((time.time() + expire_days * 24 * 60 * 60) * 1000)
 
         inbound = await self.get_inbound()
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
