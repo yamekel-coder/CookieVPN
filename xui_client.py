@@ -128,6 +128,14 @@ class XUIClient:
             data = json.loads(text)
             if not data.get("success"):
                 raise RuntimeError(f"x-ui ошибка: {data.get('msg')}")
+
+            # Проверяем что subId сохранился, если нет — обновляем клиента
+            traffic = await self.get_client_traffic(email)
+            if traffic and not traffic.get("subId"):
+                await self._update_client_sub_id(
+                    client_uuid, email, expire_ms, protocol, sub_id, str(tg_id)
+                )
+
         except Exception as e:
             print(f"[XUI] Add client error: {e}")
             raise
@@ -147,6 +155,39 @@ class XUIClient:
             "sub_link": sub_link,
             "sub_id": sub_id,
         }
+
+    async def _update_client_sub_id(
+        self, client_uuid: str, email: str, expire_ms: int,
+        protocol: str, sub_id: str, tg_id: str
+    ) -> None:
+        """Обновляет subId клиента если он не был сохранён при создании."""
+        session = await self._get_session()
+        update_settings = {
+            "clients": [{
+                "id": client_uuid,
+                "email": email,
+                "enable": True,
+                "expiryTime": expire_ms,
+                "totalGB": 0,
+                "flow": "xtls-rprx-vision" if protocol == "vless" else "",
+                "limitIp": 0,
+                "subId": sub_id,
+                "tgId": tg_id,
+            }]
+        }
+        try:
+            resp = await session.post(
+                f"{self.base_url}/panel/api/inbounds/updateClient/{client_uuid}",
+                json={"id": XUI_INBOUND_ID, "settings": json.dumps(update_settings)},
+            )
+            text = await resp.text()
+            data = json.loads(text)
+            if data.get("success"):
+                print(f"[XUI] subId обновлён для {email}")
+            else:
+                print(f"[XUI] Не удалось обновить subId: {data.get('msg')}")
+        except Exception as e:
+            print(f"[XUI] Update subId error: {e}")
 
     async def _reset_session(self) -> None:
         """Закрывает старую сессию чтобы куки обновились."""
