@@ -47,8 +47,9 @@ async def _get_config_text(tg_id: int) -> tuple:
             print(f"[config_cmd] Error getting sub_id: {e}")
     sub_link = ""
     if sub_id:
-        base = XUI_HOST.rstrip("/")
-        sub_link = f"{base}/sub/{sub_id}"
+        # Подписка работает на отдельном порту 2096
+        from config import VPN_DOMAIN
+        sub_link = f"https://{VPN_DOMAIN}:2096/sub/{sub_id}"
 
     # Прямая ссылка — логинимся и получаем inbound
     direct_link = ""

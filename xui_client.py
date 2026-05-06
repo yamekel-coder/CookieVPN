@@ -142,9 +142,8 @@ class XUIClient:
 
         link = await self._build_link(protocol, client_uuid, email, inbound, remark)
 
-        # Ссылка-подписка — приложение автоматически обновляет серверы
-        # Формат: https://host/basepath/sub/subId
-        base = XUI_HOST.rstrip("/")
+        # Ссылка-подписка на отдельном порту 2096
+        base = f"https://{VPN_DOMAIN}:2096"
         sub_link = f"{base}/sub/{sub_id}"
 
         return {
