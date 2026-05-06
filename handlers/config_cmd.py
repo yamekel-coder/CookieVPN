@@ -1,21 +1,20 @@
 """
 Команда /config — выдаёт ссылку подписки и прямую ссылку.
+Автоматически определяет сервер по email клиента.
 """
-from aiogram import Router, F
+from aiogram import Router
 from aiogram.filters import Command
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message
 from datetime import datetime
 
 from database import get_active_subscription
 from keyboards import main_menu
-from config import XUI_HOST
+from config import SERVERS, VPN_DOMAIN
 
 router = Router()
 
 
 async def _get_config_text(tg_id: int) -> tuple:
-    from xui_client import xui
-
     sub = await get_active_subscription(tg_id)
     if not sub:
         return None, "❌ У тебя нет активной подписки.\nНажми /start чтобы купить VPN."
@@ -23,20 +22,31 @@ async def _get_config_text(tg_id: int) -> tuple:
     expires = datetime.fromisoformat(sub["expires_at"])
     days_left = max((expires - datetime.utcnow()).days, 0)
 
-    # Ссылка подписки — берём sub_id из БД или запрашиваем из x-ui
+    # Определяем сервер по email клиента
+    email = sub.get("xui_email", "")
+    if email.startswith("de2_") or "de2" in email:
+        server_key = "de2"
+    else:
+        server_key = "de1"
+
+    server = SERVERS.get(server_key, {})
+    sub_domain = server.get("domain", VPN_DOMAIN)
+    sub_port = server.get("sub_port", 2096)
+
+    # Получаем sub_id
     sub_id = sub.get("xui_sub_id")
 
-    # Если sub_id нет в БД — получаем из x-ui по email
     if not sub_id:
         try:
-            await xui._reset_session()
-            await xui.login()
-            traffic = await xui.get_client_traffic(sub["xui_email"])
+            from xui_client import get_xui_client
+            import aiosqlite
+            from database import DB_PATH
+            xui_client = get_xui_client(server_key)
+            await xui_client._reset_session()
+            await xui_client.login()
+            traffic = await xui_client.get_client_traffic(sub["xui_email"])
             if traffic and traffic.get("subId"):
                 sub_id = traffic["subId"]
-                # Сохраняем в БД чтобы не запрашивать каждый раз
-                import aiosqlite
-                from database import DB_PATH
                 async with aiosqlite.connect(DB_PATH) as db:
                     await db.execute(
                         "UPDATE subscriptions SET xui_sub_id=? WHERE id=?",
@@ -45,30 +55,33 @@ async def _get_config_text(tg_id: int) -> tuple:
                     await db.commit()
         except Exception as e:
             print(f"[config_cmd] Error getting sub_id: {e}")
-    sub_link = ""
-    if sub_id:
-        # Подписка работает на отдельном порту 2096
-        from config import VPN_DOMAIN
-        sub_link = f"https://{VPN_DOMAIN}:2096/sub/{sub_id}"
 
-    # Прямая ссылка — логинимся и получаем inbound
+    # Строим ссылку подписки
+    sub_link = f"https://{sub_domain}:{sub_port}/sub/{sub_id}" if sub_id else ""
+
+    # Строим прямую ссылку
     direct_link = ""
     try:
-        await xui._reset_session()
-        await xui.login()
-        inbound = await xui.get_inbound()
+        from xui_client import get_xui_client
+        xui_client = get_xui_client(server_key)
+        await xui_client._reset_session()
+        await xui_client.login()
+        inbound = await xui_client.get_inbound()
         if inbound:
             protocol = inbound.get("protocol", "vless")
-            direct_link = await xui._build_link(
-                protocol, sub["xui_uuid"], sub["xui_email"], inbound,
-                remark="🇩🇪 CookieVPN"
+            remark = f"{server.get('emoji', '🌍')} {server.get('location', 'VPN')}"
+            direct_link = await xui_client._build_link(
+                protocol, sub["xui_uuid"], sub["xui_email"], inbound, remark=remark
             )
     except Exception as e:
         print(f"[config_cmd] Error getting direct link: {e}")
 
+    srv_label = server.get("label", server_key)
+
     if sub_link:
         text = (
             f"🔑 <b>Твои ссылки CookieVPN</b>\n\n"
+            f"🌍 Сервер: <b>{srv_label}</b>\n"
             f"📅 Подписка до: <b>{expires.strftime('%d.%m.%Y')}</b> ({days_left} дн.)\n\n"
             f"━━━━━━━━━━━━━━━\n"
             f"📡 <b>Ссылка подписки</b> (рекомендуется):\n"
@@ -80,7 +93,8 @@ async def _get_config_text(tg_id: int) -> tuple:
         )
     elif direct_link:
         text = (
-            f"🔑 <b>Твоя ссылка подключения CookieVPN</b>\n\n"
+            f"🔑 <b>Твоя ссылка CookieVPN</b>\n\n"
+            f"🌍 Сервер: <b>{srv_label}</b>\n"
             f"<code>{direct_link}</code>\n\n"
             f"📅 Подписка до: <b>{expires.strftime('%d.%m.%Y')}</b> ({days_left} дн.)"
         )
