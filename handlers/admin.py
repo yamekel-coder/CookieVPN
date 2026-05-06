@@ -4,17 +4,15 @@ from aiogram.types import CallbackQuery, Message
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+from aiogram.types import InlineKeyboardButton
 
-from config import ADMIN_IDS, PLANS
+from config import ADMIN_IDS, PLANS, SERVERS
 from database import (
     get_stats, get_all_users, extend_subscription,
     create_promocode, get_all_promocodes, deactivate_promocode,
-    give_plan_to_user,
 )
-from keyboards import (
-    admin_keyboard, back_main_keyboard, promocodes_keyboard,
-    promo_type_keyboard, give_plan_keyboard,
-)
+from keyboards import admin_keyboard, promocodes_keyboard, promo_type_keyboard
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -28,14 +26,16 @@ class GiveDaysState(StatesGroup):
     waiting_days = State()
 
 class GivePlanState(StatesGroup):
+    waiting_server = State()
+    waiting_plan = State()
     waiting_user_id = State()
-    plan_key = State()
 
 class PromoCreateState(StatesGroup):
     waiting_type = State()
     waiting_code = State()
     waiting_value = State()
     waiting_uses = State()
+    waiting_server = State()
     waiting_plan = State()
 
 class PromoDeleteState(StatesGroup):
@@ -46,13 +46,38 @@ def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
 
+def server_select_keyboard(callback_prefix: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    for key, srv in SERVERS.items():
+        builder.row(InlineKeyboardButton(
+            text=f"{srv['label']} | {srv['speed']}",
+            callback_data=f"{callback_prefix}:{key}",
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:back"))
+    return builder.as_markup()
+
+
+def plan_select_keyboard(callback_prefix: str, server_key: str) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    for key, plan in PLANS.items():
+        if key == "trial":
+            continue
+        builder.row(InlineKeyboardButton(
+            text=f"{plan['emoji']} {plan['label']}",
+            callback_data=f"{callback_prefix}:{server_key}:{key}",
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:give_plan"))
+    return builder.as_markup()
+
+
 # ─── Назад в админку ──────────────────────────────────────────────────────────
 
 @router.callback_query(F.data == "admin:back")
-async def admin_back(callback: CallbackQuery) -> None:
+async def admin_back(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
+    await state.clear()
     await callback.message.edit_text(
         "🔧 <b>Панель администратора CookieVPN</b>",
         reply_markup=admin_keyboard(), parse_mode="HTML"
@@ -74,8 +99,11 @@ async def admin_stats(callback: CallbackQuery) -> None:
         f"🆕 Новых сегодня: <b>{stats['new_today']}</b>\n"
         f"✅ Активных подписок: <b>{stats['active_subs']}</b>\n"
         f"💰 Успешных платежей: <b>{stats['total_payments']}</b>\n"
-        f"👥 Рефералов всего: <b>{stats['total_refs']}</b>"
+        f"👥 Рефералов всего: <b>{stats['total_refs']}</b>\n\n"
+        f"🖥 <b>Серверы:</b>\n"
     )
+    for key, srv in SERVERS.items():
+        text += f"• {srv['label']} — {srv['speed']}\n"
     await callback.message.edit_text(text, reply_markup=admin_keyboard(), parse_mode="HTML")
     await callback.answer()
 
@@ -222,24 +250,41 @@ async def admin_give_plan(callback: CallbackQuery, state: FSMContext) -> None:
     if not is_admin(callback.from_user.id):
         await callback.answer("⛔", show_alert=True)
         return
+    await state.set_state(GivePlanState.waiting_server)
     await callback.message.edit_text(
-        "🎁 <b>Выдать тариф</b>\n\nВыбери тариф:",
-        reply_markup=give_plan_keyboard(), parse_mode="HTML",
+        "🎁 <b>Выдать тариф</b>\n\nВыбери сервер:",
+        reply_markup=server_select_keyboard("admin:give_plan_srv"),
+        parse_mode="HTML",
     )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin:give_plan_select:"))
-async def admin_give_plan_select(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
-        await callback.answer("⛔", show_alert=True)
-        return
-    plan_key = callback.data.split(":")[2]
-    await state.set_state(GivePlanState.waiting_user_id)
-    await state.update_data(plan_key=plan_key)
-    plan = PLANS[plan_key]
+@router.callback_query(F.data.startswith("admin:give_plan_srv:"), GivePlanState.waiting_server)
+async def give_plan_server_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    server_key = callback.data.split(":")[2]
+    await state.update_data(server_key=server_key)
+    await state.set_state(GivePlanState.waiting_plan)
+    srv = SERVERS.get(server_key, {})
     await callback.message.edit_text(
-        f"🎁 Тариф: <b>{plan['emoji']} {plan['label']}</b>\n\nВведи Telegram ID пользователя:\n/cancel — отмена.",
+        f"🎁 Сервер: <b>{srv.get('label', server_key)}</b>\n\nВыбери тариф:",
+        reply_markup=plan_select_keyboard("admin:give_plan_sel", server_key),
+        parse_mode="HTML",
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("admin:give_plan_sel:"), GivePlanState.waiting_plan)
+async def give_plan_plan_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    parts = callback.data.split(":")
+    server_key, plan_key = parts[2], parts[3]
+    await state.update_data(plan_key=plan_key)
+    await state.set_state(GivePlanState.waiting_user_id)
+    plan = PLANS[plan_key]
+    srv = SERVERS.get(server_key, {})
+    await callback.message.edit_text(
+        f"🎁 Сервер: <b>{srv.get('label', server_key)}</b>\n"
+        f"Тариф: <b>{plan['emoji']} {plan['label']}</b>\n\n"
+        f"Введи Telegram ID пользователя:\n/cancel — отмена.",
         parse_mode="HTML",
     )
     await callback.answer()
@@ -259,30 +304,46 @@ async def give_plan_apply(message: Message, state: FSMContext) -> None:
 
     data = await state.get_data()
     plan_key = data["plan_key"]
+    server_key = data["server_key"]
     plan = PLANS[plan_key]
+    srv = SERVERS.get(server_key, {})
     await state.clear()
 
-    processing = await message.answer(f"⏳ Создаю VPN для <code>{user_id}</code>...", parse_mode="HTML")
+    processing = await message.answer(
+        f"⏳ Создаю VPN на <b>{srv.get('label', server_key)}</b> для <code>{user_id}</code>...",
+        parse_mode="HTML"
+    )
     try:
-        result = await give_plan_to_user(user_id, plan_key, plan["days"])
+        from xui_client import get_xui_client
+        from database import create_subscription
+        xui_client = get_xui_client(server_key)
+        client = await xui_client.add_client(user_id, plan_key, plan["days"])
+        await create_subscription(
+            tg_id=user_id, xui_uuid=client["uuid"], xui_email=client["email"],
+            plan_key=plan_key, days=plan["days"], xui_sub_id=client.get("sub_id"),
+        )
+        sub_link = client.get("sub_link", "")
+        link = client["link"]
         await processing.edit_text(
-            f"✅ Тариф <b>{plan['emoji']} {plan['label']}</b> выдан пользователю <code>{user_id}</code>!",
+            f"✅ Тариф <b>{plan['emoji']} {plan['label']}</b> выдан!\n"
+            f"Сервер: <b>{srv.get('label', server_key)}</b>\n"
+            f"Пользователь: <code>{user_id}</code>",
             reply_markup=admin_keyboard(), parse_mode="HTML",
         )
         try:
             await message.bot.send_message(
                 user_id,
                 f"🎉 <b>Тебе выдан тариф {plan['emoji']} {plan['label']}!</b>\n\n"
-                f"🔗 Ссылка для подключения:\n<code>{result['link']}</code>\n\n"
-                f"📅 Действует {plan['days']} дней.",
+                f"🌍 Сервер: <b>{srv.get('label', server_key)}</b>\n"
+                f"📅 Действует {plan['days']} дней\n\n"
+                f"📡 <b>Ссылка подписки:</b>\n<code>{sub_link}</code>\n\n"
+                f"🔑 <b>Прямая ссылка:</b>\n<code>{link}</code>",
                 parse_mode="HTML",
             )
         except Exception:
             pass
     except Exception as e:
-        await processing.edit_text(
-            f"❌ Ошибка: {e}", reply_markup=admin_keyboard(),
-        )
+        await processing.edit_text(f"❌ Ошибка: {e}", reply_markup=admin_keyboard())
 
 
 # ─── Промокоды ────────────────────────────────────────────────────────────────
@@ -312,13 +373,16 @@ async def admin_promo_list(callback: CallbackQuery) -> None:
     lines = ["🎟 <b>Промокоды</b>\n"]
     for p in promos:
         status = "✅" if p["active"] else "❌"
-        type_label = {"discount": f"скидка {p['value']}%", "days": f"+{p['value']} дней", "plan": f"тариф"}.get(p["type"], p["type"])
+        type_label = {
+            "discount": f"скидка {p['value']}%",
+            "days": f"+{p['value']} дней",
+            "plan": "тариф",
+        }.get(p["type"], p["type"])
         expires = p["expires_at"][:10] if p["expires_at"] else "∞"
         lines.append(
             f"{status} <code>{p['code']}</code> — {type_label} | "
             f"{p['used_count']}/{p['max_uses']} | до {expires}"
         )
-
     await callback.message.edit_text(
         "\n".join(lines), reply_markup=promocodes_keyboard(), parse_mode="HTML",
     )
@@ -344,25 +408,62 @@ async def promo_type_selected(callback: CallbackQuery, state: FSMContext) -> Non
     await state.update_data(promo_type=promo_type)
 
     if promo_type == "plan":
-        await state.set_state(PromoCreateState.waiting_plan)
-        from keyboards import give_plan_keyboard
+        # Выбор сервера для бесплатного тарифа
+        await state.set_state(PromoCreateState.waiting_server)
         await callback.message.edit_text(
-            "🎁 Выбери тариф для промокода:",
-            reply_markup=give_plan_keyboard(),
+            "🎁 Выбери сервер для промокода:",
+            reply_markup=server_select_keyboard("promo_srv"),
+        )
+    elif promo_type == "discount":
+        # Выбор сервера для скидки (или все серверы)
+        await state.set_state(PromoCreateState.waiting_server)
+        builder = InlineKeyboardBuilder()
+        builder.row(InlineKeyboardButton(text="🌍 Все серверы", callback_data="promo_srv:all"))
+        for key, srv in SERVERS.items():
+            builder.row(InlineKeyboardButton(
+                text=srv["label"], callback_data=f"promo_srv:{key}",
+            ))
+        builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="admin:promocodes"))
+        await callback.message.edit_text(
+            "💰 На какой сервер скидка?",
+            reply_markup=builder.as_markup(),
         )
     else:
+        # Для days — сервер не нужен
+        await state.update_data(server_key="all")
         await state.set_state(PromoCreateState.waiting_code)
-        type_hint = "процент скидки (например 20)" if promo_type == "discount" else "количество дней (например 7)"
         await callback.message.edit_text(
-            f"Введи <b>код промокода</b> (латиница, например COOKIE20):\n/cancel — отмена.",
+            "Введи <b>код промокода</b> (латиница, например WEEK7):\n/cancel — отмена.",
             parse_mode="HTML",
         )
     await callback.answer()
 
 
-@router.callback_query(F.data.startswith("admin:give_plan_select:"), PromoCreateState.waiting_plan)
+@router.callback_query(F.data.startswith("promo_srv:"))
+async def promo_server_selected(callback: CallbackQuery, state: FSMContext) -> None:
+    server_key = callback.data.split(":")[1]
+    await state.update_data(server_key=server_key)
+    data = await state.get_data()
+
+    if data["promo_type"] == "plan":
+        await state.set_state(PromoCreateState.waiting_plan)
+        await callback.message.edit_text(
+            "🎁 Выбери тариф для промокода:",
+            reply_markup=plan_select_keyboard("promo_plan", server_key),
+        )
+    else:
+        await state.set_state(PromoCreateState.waiting_code)
+        await callback.message.edit_text(
+            "Введи <b>код промокода</b> (латиница, например COOKIE20):\n/cancel — отмена.",
+            parse_mode="HTML",
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("promo_plan:"))
 async def promo_plan_selected(callback: CallbackQuery, state: FSMContext) -> None:
-    plan_key = callback.data.split(":")[2]
+    parts = callback.data.split(":")
+    plan_key = parts[2]
     await state.update_data(plan_key=plan_key)
     await state.set_state(PromoCreateState.waiting_code)
     await callback.message.edit_text(
@@ -379,7 +480,7 @@ async def promo_code_entered(message: Message, state: FSMContext) -> None:
         await message.answer("Отменено.", reply_markup=admin_keyboard())
         return
     code = message.text.strip().upper()
-    if not code.isalnum():
+    if not code.replace("-", "").replace("_", "").isalnum():
         await message.answer("Код должен содержать только буквы и цифры.")
         return
     await state.update_data(code=code)
@@ -387,7 +488,7 @@ async def promo_code_entered(message: Message, state: FSMContext) -> None:
 
     if data["promo_type"] == "plan":
         await state.set_state(PromoCreateState.waiting_uses)
-        await message.answer(f"Код: <b>{code}</b>\nСколько раз можно использовать? (например 1 или 100):", parse_mode="HTML")
+        await message.answer(f"Код: <b>{code}</b>\nСколько раз можно использовать?", parse_mode="HTML")
     else:
         await state.set_state(PromoCreateState.waiting_value)
         hint = "процент скидки (1-99)" if data["promo_type"] == "discount" else "количество дней"
@@ -407,7 +508,7 @@ async def promo_value_entered(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(value=value)
     await state.set_state(PromoCreateState.waiting_uses)
-    await message.answer("Сколько раз можно использовать? (например 1 или 100):")
+    await message.answer("Сколько раз можно использовать? (например 1 или 1000):")
 
 
 @router.message(PromoCreateState.waiting_uses)
@@ -428,10 +529,9 @@ async def promo_uses_entered(message: Message, state: FSMContext) -> None:
     promo_type = data["promo_type"]
     code = data["code"]
     value = data.get("value", 0)
-    plan_key = data.get("plan_key", "")
+    server_key = data.get("server_key", "all")
+    plan_key = data.get("plan_key", "1month")
 
-    # Для plan сохраняем plan_key в value как строку через отдельное поле
-    # Используем value=0 для plan, plan_key в expires_at временно не используем
     success = await create_promocode(
         code=code,
         type_=promo_type,
@@ -441,6 +541,7 @@ async def promo_uses_entered(message: Message, state: FSMContext) -> None:
     )
 
     if success:
+        srv_label = SERVERS.get(server_key, {}).get("label", "Все серверы") if server_key != "all" else "Все серверы"
         type_label = {
             "discount": f"скидка {value}%",
             "days": f"+{value} дней",
@@ -451,6 +552,7 @@ async def promo_uses_entered(message: Message, state: FSMContext) -> None:
             f"✅ <b>Промокод создан!</b>\n\n"
             f"🎟 Код: <code>{code}</code>\n"
             f"📦 Тип: {type_label}\n"
+            f"🌍 Сервер: {srv_label}\n"
             f"🔢 Использований: {max_uses}",
             reply_markup=admin_keyboard(), parse_mode="HTML",
         )
@@ -467,9 +569,7 @@ async def admin_promo_delete_start(callback: CallbackQuery, state: FSMContext) -
         await callback.answer("⛔", show_alert=True)
         return
     await state.set_state(PromoDeleteState.waiting_code)
-    await callback.message.edit_text(
-        "❌ Введи код промокода для удаления:\n/cancel — отмена.",
-    )
+    await callback.message.edit_text("❌ Введи код промокода для удаления:\n/cancel — отмена.")
     await callback.answer()
 
 
