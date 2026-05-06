@@ -80,16 +80,8 @@ class XUIClient:
         import time
         expire_ms = int((time.time() + expire_days * 24 * 60 * 60) * 1000)
 
-        # Красивое имя конфига в приложении
-        plan_labels = {
-            "trial": "Trial 🆓",
-            "1month": "1 Month",
-            "3months": "3 Months",
-            "6months": "6 Months",
-            "1year": "1 Year 👑",
-        }
-        remark = f"🇩🇪 CookieVPN {plan_labels.get(plan_key, plan_key)}"
-
+        # Название сервера в приложении — просто локация
+        remark = "🇩🇪 Германия 1"
         inbound = await self.get_inbound()
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
 
