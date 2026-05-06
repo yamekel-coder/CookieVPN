@@ -93,6 +93,10 @@ class XUIClient:
         inbound = await self.get_inbound()
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
 
+        # Генерируем subId для ссылки-подписки
+        import secrets
+        sub_id = secrets.token_hex(8)  # 16 символов
+
         client_settings = {
             "clients": [
                 {
@@ -103,6 +107,9 @@ class XUIClient:
                     "totalGB": 0,
                     "flow": "xtls-rprx-vision" if protocol == "vless" else "",
                     "limitIp": 0,
+                    "subId": sub_id,
+                    "tgId": str(tg_id),
+                    "comment": remark,
                 }
             ]
         }
@@ -127,11 +134,18 @@ class XUIClient:
             raise
 
         link = await self._build_link(protocol, client_uuid, email, inbound, remark)
+
+        # Ссылка-подписка — приложение автоматически обновляет серверы
+        # Формат: https://host/basepath/sub/subId
+        base = XUI_HOST.rstrip("/")
+        sub_link = f"{base}/sub/{sub_id}"
+
         return {
             "uuid": client_uuid,
             "email": email,
             "protocol": protocol,
             "link": link,
+            "sub_link": sub_link,
         }
 
     async def _reset_session(self) -> None:
