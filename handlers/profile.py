@@ -95,28 +95,7 @@ async def copy_ref_link(callback: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "get_config")
 async def get_config_callback(callback: CallbackQuery) -> None:
-    from database import get_active_subscription
-    from xui_client import xui
-    import json
-
-    sub = await get_active_subscription(callback.from_user.id)
-    if not sub:
-        await callback.answer("❌ Нет активной подписки.", show_alert=True)
-        return
-
-    expires = datetime.fromisoformat(sub["expires_at"])
-    inbound = await xui.get_inbound()
-    if inbound:
-        protocol = inbound.get("protocol", "vless")
-        link = await xui._build_link(protocol, sub["xui_uuid"], sub["xui_email"], inbound)
-    else:
-        link = "Не удалось получить ссылку. Обратись в поддержку."
-
-    text = (
-        f"🔑 <b>Твоя ссылка подключения</b>\n\n"
-        f"<code>{link}</code>\n\n"
-        f"📅 Подписка до: <b>{expires.strftime('%d.%m.%Y')}</b>\n\n"
-        f"Скопируй и импортируй в приложение."
-    )
+    from handlers.config_cmd import _get_config_text
+    _, text = await _get_config_text(callback.from_user.id)
     await callback.message.answer(text, parse_mode="HTML")
     await callback.answer()
