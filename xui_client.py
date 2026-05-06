@@ -75,13 +75,15 @@ class XUIClient:
             raise RuntimeError("Не удалось авторизоваться в x-ui панели")
 
         client_uuid = str(uuid.uuid4())
-        email = f"tg_{tg_id}_{plan_key}"
+        # Email используется как идентификатор — делаем короткий и чистый
+        email = f"de1_{tg_id}"
         # expiryTime — абсолютный Unix timestamp в миллисекундах
         import time
         expire_ms = int((time.time() + expire_days * 24 * 60 * 60) * 1000)
 
-        # Название сервера в приложении — просто локация
+        # Название сервера в приложении
         remark = "🇩🇪 Германия 1"
+
         inbound = await self.get_inbound()
         protocol = inbound.get("protocol", "vless") if inbound else "vless"
 
