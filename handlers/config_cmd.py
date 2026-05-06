@@ -23,8 +23,28 @@ async def _get_config_text(tg_id: int) -> tuple:
     expires = datetime.fromisoformat(sub["expires_at"])
     days_left = max((expires - datetime.utcnow()).days, 0)
 
-    # Ссылка подписки из сохранённого sub_id
+    # Ссылка подписки — берём sub_id из БД или запрашиваем из x-ui
     sub_id = sub.get("xui_sub_id")
+
+    # Если sub_id нет в БД — получаем из x-ui по email
+    if not sub_id:
+        try:
+            await xui._reset_session()
+            await xui.login()
+            traffic = await xui.get_client_traffic(sub["xui_email"])
+            if traffic and traffic.get("subId"):
+                sub_id = traffic["subId"]
+                # Сохраняем в БД чтобы не запрашивать каждый раз
+                import aiosqlite
+                from database import DB_PATH
+                async with aiosqlite.connect(DB_PATH) as db:
+                    await db.execute(
+                        "UPDATE subscriptions SET xui_sub_id=? WHERE id=?",
+                        (sub_id, sub["id"])
+                    )
+                    await db.commit()
+        except Exception as e:
+            print(f"[config_cmd] Error getting sub_id: {e}")
     sub_link = ""
     if sub_id:
         base = XUI_HOST.rstrip("/")
