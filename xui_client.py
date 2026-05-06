@@ -83,7 +83,8 @@ class XUIClient:
         client_uuid = str(uuid.uuid4())
         email = f"de{'2' if self.server_key == 'de2' else '1'}_{tg_id}"
         expire_ms = int((time.time() + expire_days * 24 * 60 * 60) * 1000)
-        remark = f"{self.server['emoji']} {self.server['location']}"
+        speed = self.server.get("speed", "")
+        remark = f"{self.server['emoji']} {self.server['location']} {speed}".strip()
         sub_id = secrets.token_hex(8)
 
         inbound = await self.get_inbound()
