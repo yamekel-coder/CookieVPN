@@ -24,25 +24,37 @@ def main_menu() -> InlineKeyboardMarkup:
 def plans_keyboard(payment: str = "stars", show_trial: bool = False) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     if show_trial:
-        builder.row(
-            InlineKeyboardButton(
-                text="🆓 Пробный период (3 дня) — Бесплатно",
-                callback_data="confirm_pay:trial:free",
-            )
-        )
+        builder.row(InlineKeyboardButton(
+            text="🆓 Пробный период (3 дня) — Бесплатно",
+            callback_data="confirm_pay:trial:free",
+        ))
     for key, plan in PLANS.items():
         if key == "trial":
             continue
         price = plan["stars"] if payment == "stars" else plan["rub"]
         currency_label = "⭐" if payment == "stars" else "₽"
-        builder.row(
-            InlineKeyboardButton(
-                text=f"{plan['emoji']} {plan['label']} — {price} {currency_label}",
-                callback_data=f"plan:{key}:{payment}",
-            )
-        )
+        builder.row(InlineKeyboardButton(
+            text=f"{plan['emoji']} {plan['label']} — {price} {currency_label}",
+            callback_data=f"plan:{key}:{payment}",
+        ))
     builder.row(InlineKeyboardButton(text="🎟 Ввести промокод", callback_data="enter_promo"))
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_main"))
+    return builder.as_markup()
+
+
+def server_keyboard(plan_key: str, payment: str) -> InlineKeyboardMarkup:
+    from config import SERVERS, PLANS
+    builder = InlineKeyboardBuilder()
+    plan = PLANS.get(plan_key, {})
+    for srv_key, srv in SERVERS.items():
+        price = plan.get("stars_premium" if srv.get("premium") else "stars", plan.get("stars", 0))
+        currency = "⭐"
+        premium_label = " 🔥" if srv.get("premium") else ""
+        builder.row(InlineKeyboardButton(
+            text=f"{srv['label']}{premium_label} — {price} {currency} | {srv['speed']}",
+            callback_data=f"server:{plan_key}:{payment}:{srv_key}",
+        ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="buy"))
     return builder.as_markup()
 
 

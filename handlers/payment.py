@@ -179,7 +179,49 @@ async def select_plan(callback: CallbackQuery) -> None:
             text, reply_markup=payment_method_keyboard(plan_key), parse_mode="HTML"
         )
     else:
-        await _show_confirm(callback, plan_key, payment)
+        # Показываем выбор сервера
+        from keyboards import server_keyboard
+        text = (
+            f"🌍 <b>Выбери сервер</b>\n\n"
+            f"Тариф: {plan['emoji']} {plan['label']}\n\n"
+            f"Все серверы включают безлимитный трафик."
+        )
+        await callback.message.edit_text(
+            text, reply_markup=server_keyboard(plan_key, payment), parse_mode="HTML"
+        )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("server:"))
+async def select_server(callback: CallbackQuery) -> None:
+    parts = callback.data.split(":")
+    _, plan_key, payment, server_key = parts
+    plan = PLANS.get(plan_key)
+    if not plan:
+        await callback.answer("Тариф не найден.", show_alert=True)
+        return
+    from config import SERVERS
+    server = SERVERS.get(server_key, {})
+    price = plan.get("stars_premium" if server.get("premium") else "stars", plan["stars"])
+    currency_label = "⭐ Stars"
+
+    text = (
+        f"✅ <b>Подтверждение</b>\n\n"
+        f"Тариф: {plan['emoji']} <b>{plan['label']}</b>\n"
+        f"Сервер: <b>{server.get('label', server_key)}</b>\n"
+        f"Скорость: <b>{server.get('speed', '—')}</b>\n"
+        f"Цена: <b>{price} {currency_label}</b>\n\n"
+        f"Ссылка выдаётся автоматически после оплаты."
+    )
+    from keyboards import confirm_payment_keyboard
+    # Сохраняем server_key в callback через специальный формат
+    builder = InlineKeyboardBuilder()
+    builder.row(InlineKeyboardButton(
+        text="✅ Оплатить",
+        callback_data=f"confirm_pay:{plan_key}:{payment}:{server_key}",
+    ))
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="buy"))
+    await callback.message.edit_text(text, reply_markup=builder.as_markup(), parse_mode="HTML")
     await callback.answer()
 
 
@@ -211,23 +253,27 @@ async def _show_confirm(callback: CallbackQuery, plan_key: str, payment: str) ->
 @router.callback_query(F.data.startswith("confirm_pay:"))
 async def initiate_payment(callback: CallbackQuery, bot: Bot) -> None:
     parts = callback.data.split(":")
-    plan_key, payment = parts[1], parts[2]
+    plan_key = parts[1]
+    payment = parts[2]
+    server_key = parts[3] if len(parts) > 3 else "de1"
     plan = PLANS.get(plan_key)
     if not plan:
         await callback.answer("Тариф не найден.", show_alert=True)
         return
 
     if payment == "free":
-        await _activate_free(callback)
+        await _activate_free(callback, server_key)
         return
     elif payment == "stars":
-        await _pay_stars(callback, bot, plan_key, plan)
+        from config import SERVERS
+        server = SERVERS.get(server_key, {})
+        price = plan.get("stars_premium" if server.get("premium") else "stars", plan["stars"])
+        await _pay_stars(callback, bot, plan_key, plan, server_key, price)
     elif payment == "yookassa":
-        await _pay_yookassa(callback, bot, plan_key, plan)
+        await _pay_yookassa(callback, bot, plan_key, plan, server_key)
 
 
-async def _activate_free(callback: CallbackQuery) -> None:
-    """Активация пробного периода."""
+async def _activate_free(callback: CallbackQuery, server_key: str = "de1") -> None:
     tg_id = callback.from_user.id
     if await is_trial_used(tg_id):
         await callback.answer("❌ Пробный период уже использован.", show_alert=True)
@@ -235,28 +281,29 @@ async def _activate_free(callback: CallbackQuery) -> None:
     if await get_active_subscription(tg_id):
         await callback.answer("У тебя уже есть активная подписка.", show_alert=True)
         return
-
     await callback.message.edit_text("⏳ Активирую пробный период...")
     await mark_trial_used(tg_id)
-    await _issue_vpn(callback.message, tg_id, "trial", PLANS["trial"], is_free=True)
+    await _issue_vpn(callback.message, tg_id, "trial", PLANS["trial"], server_key=server_key, is_free=True)
     await callback.answer()
 
 
-async def _pay_stars(callback: CallbackQuery, bot: Bot, plan_key: str, plan: dict) -> None:
+async def _pay_stars(callback: CallbackQuery, bot: Bot, plan_key: str, plan: dict, server_key: str = "de1", price: int = None) -> None:
+    if price is None:
+        price = plan["stars"]
     await callback.message.delete()
     await bot.send_invoice(
         chat_id=callback.from_user.id,
         title=f"CookieVPN — {plan['label']}",
         description=f"VPN на {plan['days']} дней. Безлимит, автовыдача.",
-        payload=f"vpn:{plan_key}:stars",
+        payload=f"vpn:{plan_key}:stars:{server_key}",
         currency="XTR",
-        prices=[LabeledPrice(label=plan["label"], amount=plan["stars"])],
+        prices=[LabeledPrice(label=plan["label"], amount=price)],
         provider_token="",
     )
     await callback.answer()
 
 
-async def _pay_yookassa(callback: CallbackQuery, bot: Bot, plan_key: str, plan: dict) -> None:
+async def _pay_yookassa(callback: CallbackQuery, bot: Bot, plan_key: str, plan: dict, server_key: str = "de1") -> None:
     if not YOOKASSA_SHOP_ID or not YOOKASSA_SECRET_KEY:
         await callback.answer("Оплата картой временно недоступна.", show_alert=True)
         return
@@ -265,7 +312,7 @@ async def _pay_yookassa(callback: CallbackQuery, bot: Bot, plan_key: str, plan: 
         chat_id=callback.from_user.id,
         title=f"CookieVPN — {plan['label']}",
         description=f"VPN на {plan['days']} дней. Безлимит, автовыдача.",
-        payload=f"vpn:{plan_key}:yookassa",
+        payload=f"vpn:{plan_key}:yookassa:{server_key}",
         currency="RUB",
         prices=[LabeledPrice(label=plan["label"], amount=plan["rub"] * 100)],
         provider_token=f"{YOOKASSA_SHOP_ID}:{YOOKASSA_SECRET_KEY}",
@@ -285,11 +332,14 @@ async def pre_checkout(query: PreCheckoutQuery) -> None:
 @router.message(F.successful_payment)
 async def successful_payment_handler(message: Message) -> None:
     payment: SuccessfulPayment = message.successful_payment
-    payload = payment.invoice_payload
+    payload = payment.invoice_payload  # "vpn:{plan_key}:{method}:{server_key}"
 
     try:
-        _, plan_key, method = payload.split(":")
-    except ValueError:
+        parts = payload.split(":")
+        plan_key = parts[1]
+        method = parts[2]
+        server_key = parts[3] if len(parts) > 3 else "de1"
+    except (ValueError, IndexError):
         await message.answer("Ошибка обработки платежа. Обратитесь в поддержку.")
         return
 
@@ -306,19 +356,28 @@ async def successful_payment_handler(message: Message) -> None:
     )
 
     processing_msg = await message.answer("⏳ Оплата получена! Создаю твой VPN...")
-    await _issue_vpn(processing_msg, tg_id, plan_key, plan, payment_charge_id=payment.telegram_payment_charge_id)
+    await _issue_vpn(
+        processing_msg, tg_id, plan_key, plan,
+        server_key=server_key,
+        payment_charge_id=payment.telegram_payment_charge_id,
+    )
 
 
 async def _issue_vpn(
     msg, tg_id: int, plan_key: str, plan: dict,
+    server_key: str = "de1",
     is_free: bool = False,
     payment_charge_id: str = None,
 ) -> None:
-    """Создаёт клиента в x-ui и отправляет ссылку."""
+    from xui_client import get_xui_client
+    from config import SERVERS
+    xui_client = get_xui_client(server_key)
+    server = SERVERS.get(server_key, {})
+
     try:
-        client = await xui.add_client(tg_id=tg_id, plan_key=plan_key, expire_days=plan["days"])
+        client = await xui_client.add_client(tg_id=tg_id, plan_key=plan_key, expire_days=plan["days"])
     except Exception as e:
-        logger.error(f"Ошибка x-ui для {tg_id}: {e}")
+        logger.error(f"Ошибка x-ui ({server_key}) для {tg_id}: {e}")
         await msg.edit_text(
             "✅ Оплата прошла, но возникла ошибка при создании VPN.\n"
             "Обратись в поддержку — исправим в течение 15 минут."
@@ -327,45 +386,39 @@ async def _issue_vpn(
 
     await create_subscription(
         tg_id=tg_id, xui_uuid=client["uuid"], xui_email=client["email"],
-        plan_key=plan_key, days=plan["days"],
-        xui_sub_id=client.get("sub_id"),
+        plan_key=plan_key, days=plan["days"], xui_sub_id=client.get("sub_id"),
     )
 
     if payment_charge_id:
         await update_payment_status(payment_charge_id, "success")
 
-    # Начисляем реферальный бонус пригласившему
     inviter_id = await credit_referral_bonus(tg_id, REFERRAL_DAYS)
     if inviter_id:
-        # Продлеваем подписку пригласившего
         new_expires = await extend_subscription(inviter_id, REFERRAL_DAYS)
         try:
             exp_str = new_expires[:10] if new_expires else ""
             await msg.bot.send_message(
                 inviter_id,
-                f"🎉 <b>Реферальный бонус!</b>\n\n"
-                f"Твой друг активировал CookieVPN.\n"
-                f"Тебе начислено <b>+{REFERRAL_DAYS} дня</b> к подписке! 🍪\n"
-                f"Подписка продлена до: <b>{exp_str}</b>",
+                f"🎉 <b>Реферальный бонус!</b>\n\nТвой друг активировал CookieVPN.\n"
+                f"Тебе начислено <b>+{REFERRAL_DAYS} дня</b>! 🍪\nДо: <b>{exp_str}</b>",
                 parse_mode="HTML",
             )
         except Exception:
             pass
 
-    link = client["link"]
     sub_link = client.get("sub_link", "")
+    link = client["link"]
     prefix = "🆓 <b>Пробный период активирован!</b>" if is_free else "🎉 <b>Твой CookieVPN готов!</b>"
     text = (
         f"{prefix}\n\n"
         f"📦 Тариф: {plan['emoji']} {plan['label']}\n"
+        f"🌍 Сервер: <b>{server.get('label', server_key)}</b>\n"
         f"📅 Действует {plan['days']} дней\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"🔗 <b>Ссылка подписки</b> (рекомендуется):\n"
+        f"📡 <b>Ссылка подписки</b> (рекомендуется):\n"
         f"<code>{sub_link}</code>\n\n"
-        f"📋 Импортируй в приложение — список серверов обновляется автоматически, "
-        f"показывает трафик и дату истечения.\n\n"
         f"━━━━━━━━━━━━━━━\n"
-        f"🔑 <b>Прямая ссылка</b> (если подписка не работает):\n"
+        f"🔑 <b>Прямая ссылка:</b>\n"
         f"<code>{link}</code>\n\n"
         f"Нажми «📖 Инструкция» если не знаешь как подключиться."
     )
