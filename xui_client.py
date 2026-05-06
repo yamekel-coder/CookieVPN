@@ -96,7 +96,6 @@ class XUIClient:
         # Генерируем subId для ссылки-подписки
         import secrets
         sub_id = secrets.token_hex(8)  # 16 символов
-
         client_settings = {
             "clients": [
                 {
@@ -146,6 +145,7 @@ class XUIClient:
             "protocol": protocol,
             "link": link,
             "sub_link": sub_link,
+            "sub_id": sub_id,
         }
 
     async def _reset_session(self) -> None:

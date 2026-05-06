@@ -25,6 +25,7 @@ async def init_db() -> None:
                 tg_id       INTEGER NOT NULL,
                 xui_uuid    TEXT NOT NULL,
                 xui_email   TEXT NOT NULL,
+                xui_sub_id  TEXT,
                 plan_key    TEXT NOT NULL,
                 started_at  TEXT NOT NULL,
                 expires_at  TEXT NOT NULL,
@@ -90,6 +91,11 @@ async def init_db() -> None:
                 await db.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
             except Exception:
                 pass
+        # Миграция subscriptions
+        try:
+            await db.execute("ALTER TABLE subscriptions ADD COLUMN xui_sub_id TEXT")
+        except Exception:
+            pass
         await db.commit()
 
 
@@ -146,18 +152,20 @@ async def get_active_subscription(tg_id: int) -> Optional[dict]:
 
 async def create_subscription(
     tg_id: int, xui_uuid: str, xui_email: str, plan_key: str, days: int,
+    xui_sub_id: Optional[str] = None,
 ) -> dict:
     now = datetime.utcnow()
     expires = now + timedelta(days=days)
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
-            INSERT INTO subscriptions (tg_id, xui_uuid, xui_email, plan_key, started_at, expires_at)
-            VALUES (?,?,?,?,?,?)
-        """, (tg_id, xui_uuid, xui_email, plan_key, now.isoformat(), expires.isoformat()))
+            INSERT INTO subscriptions (tg_id, xui_uuid, xui_email, xui_sub_id, plan_key, started_at, expires_at)
+            VALUES (?,?,?,?,?,?,?)
+        """, (tg_id, xui_uuid, xui_email, xui_sub_id, plan_key, now.isoformat(), expires.isoformat()))
         await db.commit()
     return {
         "tg_id": tg_id, "xui_uuid": xui_uuid, "xui_email": xui_email,
-        "plan_key": plan_key, "started_at": now.isoformat(), "expires_at": expires.isoformat(),
+        "xui_sub_id": xui_sub_id, "plan_key": plan_key,
+        "started_at": now.isoformat(), "expires_at": expires.isoformat(),
     }
 
 

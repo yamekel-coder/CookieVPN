@@ -328,6 +328,7 @@ async def _issue_vpn(
     await create_subscription(
         tg_id=tg_id, xui_uuid=client["uuid"], xui_email=client["email"],
         plan_key=plan_key, days=plan["days"],
+        xui_sub_id=client.get("sub_id"),
     )
 
     if payment_charge_id:
